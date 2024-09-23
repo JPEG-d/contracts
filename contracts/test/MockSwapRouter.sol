@@ -13,7 +13,7 @@ contract MockSwapRouter is ISwapRouter {
 
     function exactInput(
         ExactInputParams calldata _params
-    ) external override returns (uint256) {
+    ) external payable override returns (uint256) {
         require(
             nextAmountOut >= _params.amountOutMinimum,
             "INSUFFICIENT_AMOUNT_OUT"
@@ -34,8 +34,12 @@ contract MockSwapRouter is ISwapRouter {
                 0x1000000000000000000000000
             )
         }
-
-        _inputToken.transferFrom(msg.sender, address(this), _params.amountIn);
+        if (msg.value != _params.amountIn)
+            _inputToken.transferFrom(
+                msg.sender,
+                address(this),
+                _params.amountIn
+            );
         _outputToken.transfer(_params.recipient, nextAmountOut);
 
         return nextAmountOut;
