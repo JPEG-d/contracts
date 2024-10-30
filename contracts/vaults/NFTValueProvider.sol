@@ -100,6 +100,9 @@ contract NFTValueProvider is
     address public constant BURN_ADDRESS =
         0x000000000000000000000000000000000000dEaD;
 
+    uint256 internal constant JPGD_SUPPLY = 100000000000000000000000000000;
+    uint256 internal constant JPEG_SUPPLY = 69420000000000000000000000000;
+
     /// @notice The JPEG floor oracles aggregator
     IJPEGOraclesAggregator public aggregator;
     /// @notice If true, the floor price won't be fetched using the Chainlink oracle but
@@ -231,17 +234,17 @@ contract NFTValueProvider is
         minjpgdTokenToLock = 1 ether;
     }
 
-    function finalizeUpgrade(
-        address _jpgdToken,
-        address _jpgdTokenOracle
-    ) external {
-        if (address(jpgdToken) != address(0)) revert();
+    function finalizeUpgrade() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        IERC20Upgradeable _jpeg = jpeg;
+        uint256 _balance = jpeg.balanceOf(address(this));
+        if (_balance == 0) revert();
 
-        if (_jpgdToken == address(0) || _jpgdTokenOracle == address(0))
-            revert ZeroAddress();
-
-        jpgdToken = IERC20Upgradeable(_jpgdToken);
-        jpgdTokenOracle = IAggregatorV3Interface(_jpgdTokenOracle);
+        jpgdToken.transferFrom(
+            msg.sender,
+            address(this),
+            (_balance * JPGD_SUPPLY) / JPEG_SUPPLY
+        );
+        _jpeg.transfer(msg.sender, _balance);
     }
 
     /// @param _owner The owner of the NFT at index `_nftIndex` (or the owner of the associated position in the vault)
@@ -466,8 +469,11 @@ contract NFTValueProvider is
         uint256 _nftIndex
     ) external nonReentrant onlyRole(VAULT_ROLE) {
         uint256 _traitBoostLockedValue = traitBoostPositions[_nftIndex]
-            .lockedValue;
-        bool _isTraitBoostNew = traitBoostPositions[_nftIndex].isNewToken;
+            .isNewToken
+            ? traitBoostPositions[_nftIndex].lockedValue
+            : (traitBoostPositions[_nftIndex].lockedValue * JPGD_SUPPLY) /
+                JPEG_SUPPLY;
+
         if (_traitBoostLockedValue != 0) {
             emit TraitBoostLiquidated(
                 traitBoostPositions[_nftIndex].owner,
@@ -477,8 +483,11 @@ contract NFTValueProvider is
             delete traitBoostPositions[_nftIndex];
         }
 
-        uint256 _ltvBoostLockedValue = ltvBoostPositions[_nftIndex].lockedValue;
-        bool _isLtvBoostNew = ltvBoostPositions[_nftIndex].isNewToken;
+        uint256 _ltvBoostLockedValue = ltvBoostPositions[_nftIndex].isNewToken
+            ? ltvBoostPositions[_nftIndex].lockedValue
+            : (ltvBoostPositions[_nftIndex].lockedValue * JPGD_SUPPLY) /
+                JPEG_SUPPLY;
+
         if (_ltvBoostLockedValue != 0) {
             emit LTVBoostLiquidated(
                 ltvBoostPositions[_nftIndex].owner,
@@ -489,19 +498,8 @@ contract NFTValueProvider is
             delete ltvBoostRateIncreases[_nftIndex];
         }
 
-        uint256 _jpgdTokenToBurn;
-        uint256 _jpegToBurn;
-
-        if (_isTraitBoostNew) _jpgdTokenToBurn = _traitBoostLockedValue;
-        else _jpegToBurn = _traitBoostLockedValue;
-
-        if (_isLtvBoostNew) _jpgdTokenToBurn += _ltvBoostLockedValue;
-        else _jpegToBurn += _ltvBoostLockedValue;
-
-        if (_jpgdTokenToBurn > 0)
-            jpgdToken.transfer(BURN_ADDRESS, _jpgdTokenToBurn);
-
-        if (_jpegToBurn > 0) jpeg.transfer(BURN_ADDRESS, _jpegToBurn);
+        uint256 _amountToBurn = _ltvBoostLockedValue + _traitBoostLockedValue;
+        if (_amountToBurn > 0) jpgdToken.transfer(BURN_ADDRESS, _amountToBurn);
     }
 
     /// @notice Allows the DAO to bypass the floor oracle and override the NFT floor value
@@ -658,7 +656,7 @@ contract NFTValueProvider is
             if (_rateIncrease.greaterThan(_maxRateIncrease))
                 revert RateLib.InvalidRate();
 
-            uint256 _nftToLock = _calculateLTVBoostLock(
+            uint256 _jpgdToLock = _calculateLTVBoostLock(
                 _baseCreditLimit,
                 _baseCreditLimit.sum(_rateIncrease),
                 _lockRate,
@@ -679,16 +677,17 @@ contract NFTValueProvider is
                 ) revert LockExists(_index);
                 else {
                     if (!_lock.isNewToken && _lock.lockedValue > 0) {
-                        jpeg.safeTransfer(_lock.owner, _lock.lockedValue);
-                        _lock.lockedValue = 0;
-                    } else if (_lock.lockedValue > _nftToLock)
-                        _nftToLock = _lock.lockedValue;
+                        _lock.lockedValue =
+                            (_lock.lockedValue * JPGD_SUPPLY) /
+                            JPEG_SUPPLY;
+                    } else if (_lock.lockedValue > _jpgdToLock)
+                        _jpgdToLock = _lock.lockedValue;
                 }
             }
 
-            if (_minLock > _nftToLock) _nftToLock = _minLock;
+            if (_minLock > _jpgdToLock) _jpgdToLock = _minLock;
 
-            _requiredjpgdTokens += _nftToLock;
+            _requiredjpgdTokens += _jpgdToLock;
 
             if (_lock.owner == msg.sender)
                 _jpgdTokensToRefund += _lock.lockedValue;
@@ -698,7 +697,7 @@ contract NFTValueProvider is
             ltvBoostPositions[_index] = JPEGLock(
                 msg.sender,
                 0,
-                _nftToLock,
+                _jpgdToLock,
                 true
             );
             ltvBoostRateIncreases[_index] = _rateIncrease;
@@ -706,7 +705,7 @@ contract NFTValueProvider is
             emit LTVBoost(
                 msg.sender,
                 _index,
-                _nftToLock,
+                _jpgdToLock,
                 _rateIncrease.numerator
             );
         }
@@ -751,20 +750,21 @@ contract NFTValueProvider is
             ) revert LockExists(_index);
 
             if (!_lock.isNewToken && _lock.lockedValue > 0) {
-                jpeg.safeTransfer(_lock.owner, _lock.lockedValue);
-                _lock.lockedValue = 0;
+                _lock.lockedValue =
+                    (_lock.lockedValue * JPGD_SUPPLY) /
+                    JPEG_SUPPLY;
             }
 
-            uint256 _nftToLock = _calculateTraitBoostLock(
+            uint256 _jpgdToLock = _calculateTraitBoostLock(
                 _lockRate,
                 _nftType,
                 _floor,
                 _jpgdTokenPrice
             );
 
-            if (_minLock > _nftToLock) revert InvalidNFTType(_nftType);
+            if (_minLock > _jpgdToLock) revert InvalidNFTType(_nftType);
 
-            _requiredjpgdTokens += _nftToLock;
+            _requiredjpgdTokens += _jpgdToLock;
 
             if (_lock.owner == msg.sender)
                 _jpgdTokensToRefund += _lock.lockedValue;
@@ -774,11 +774,11 @@ contract NFTValueProvider is
             traitBoostPositions[_index] = JPEGLock(
                 msg.sender,
                 0,
-                _nftToLock,
+                _jpgdToLock,
                 true
             );
 
-            emit TraitBoost(msg.sender, _index, _nftToLock);
+            emit TraitBoost(msg.sender, _index, _jpgdToLock);
         }
 
         if (_requiredjpgdTokens > _jpgdTokensToRefund)
@@ -859,22 +859,12 @@ contract NFTValueProvider is
         uint256 _length = _nftIndexes.length;
         if (_length == 0) revert InvalidLength();
 
-        uint256 _nftToSend;
+        uint256 _tokensToSend;
         for (uint256 i; i < _length; ++i) {
             uint256 _index = _nftIndexes[i];
-            JPEGLock memory _lock;
-
-            if (_isTraitBoost) {
-                _lock = traitBoostPositions[_index];
-                delete traitBoostPositions[_index];
-                emit TraitBoostUnlock(msg.sender, _index, _lock.lockedValue);
-            } else {
-                _lock = ltvBoostPositions[_index];
-                delete ltvBoostPositions[_index];
-                delete ltvBoostRateIncreases[_index];
-
-                emit LTVBoostUnlock(msg.sender, _index, _lock.lockedValue);
-            }
+            JPEGLock memory _lock = _isTraitBoost
+                ? traitBoostPositions[_index]
+                : ltvBoostPositions[_index];
 
             if (
                 _lock.owner != msg.sender ||
@@ -882,15 +872,25 @@ contract NFTValueProvider is
                 _lock.unlockAt > block.timestamp
             ) revert Unauthorized();
 
-            if (!_lock.isNewToken && _lock.lockedValue > 0) {
-                jpeg.safeTransfer(_lock.owner, _lock.lockedValue);
-                _lock.lockedValue = 0;
+            if (!_lock.isNewToken && _lock.lockedValue > 0)
+                _lock.lockedValue =
+                    (_lock.lockedValue * JPGD_SUPPLY) /
+                    JPEG_SUPPLY;
+
+            if (_isTraitBoost) {
+                delete traitBoostPositions[_index];
+                emit TraitBoostUnlock(msg.sender, _index, _lock.lockedValue);
+            } else {
+                delete ltvBoostPositions[_index];
+                delete ltvBoostRateIncreases[_index];
+
+                emit LTVBoostUnlock(msg.sender, _index, _lock.lockedValue);
             }
 
-            _nftToSend += _lock.lockedValue;
+            _tokensToSend += _lock.lockedValue;
         }
 
-        jpgdToken.safeTransfer(msg.sender, _nftToSend);
+        jpgdToken.safeTransfer(msg.sender, _tokensToSend);
     }
 
     function _calculateTraitBoostLock(
