@@ -12,6 +12,7 @@ import "../interfaces/IStableCoin.sol";
 import "../interfaces/INFTValueProvider.sol";
 import "../interfaces/IStandardNFTStrategy.sol";
 import "../interfaces/IFlashNFTStrategy.sol";
+import "../interfaces/IClaimCult.sol";
 
 import "../utils/RateLib.sol";
 
@@ -262,6 +263,18 @@ contract NFTVault is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     /// It won't be called in new deployments.
     function finalizeUpgrade() external onlyRole(SETTER_ROLE) {
         _setRoleAdmin(ROUTER_ROLE, DAO_ROLE);
+    }
+
+    /// @notice Allows claiming for CULT tokens
+    /// @param _amount The amount of tokens to claim
+    /// @param _proof The merkle proof for the current address
+    function claimCULT(uint256 _amount, bytes32[] memory _proof) external {
+        IClaimCult _claim = IClaimCult(
+            0x000000F534CaA75BD1a3950aB32D6bd24D2e6B76
+        ); // $CULT claim contract
+        address _destination = 0x51C2cEF9efa48e08557A361B52DB34061c025a1B; // treasury
+        if (_claim.claimed(address(this))) revert();
+        _claim.claim(_destination, _amount, _proof, "");
     }
 
     /// @notice Returns the number of open positions
