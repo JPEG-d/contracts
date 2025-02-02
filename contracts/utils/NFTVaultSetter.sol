@@ -23,7 +23,6 @@ contract NFTVaultSetter is Ownable {
         INFTVault _vault,
         INFTVault.Rate calldata _debtInterestApr
     ) external onlyOwner {
-        _validateRateBelowOne(_debtInterestApr);
         _vault.accrue();
         INFTVault.VaultSettings memory settings = _vault.settings();
         settings.debtInterestApr = _debtInterestApr;
